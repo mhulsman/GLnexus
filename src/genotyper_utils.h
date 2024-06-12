@@ -160,8 +160,20 @@ protected:
     }
 
     static T missing_element_wrapper(const vector<T>& v, T missing) {
-        return v.size() == 1 ? v[0] : missing;
+    	//check if all elements are the same, then output that element, otherwise
+    	//return missing
+		if (v.size() == 1) return v[0];
+		else if (v.size() == 0) return missing;
+
+		T first = v[0];
+		for (int i = 1; i < v.size(); i++) {
+			if (v[i] != first) {
+				return missing;
+			}
+		}
+		return first;
     }
+
 
     // Overloaded wrapper function to call bcf_get_format of the correct
     // format field type
