@@ -234,7 +234,7 @@ protected:
         }
         return Status::OK();
     }
-    virtual Status combine_format_data(vector<T>& ans) {
+    virtual Status combine_format_data(vector<T>& ans, int& n_missing) {
         Status s;
         ans.clear();
 
@@ -254,19 +254,29 @@ protected:
         // Combine values using the combine_f function given
         for (auto& format_one : format_v) {
             ans.push_back(combine_f(format_one, missing_value));
+
+            //check if the added value is missing
+            if (ans.back() == missing_value) {
+				n_missing++;
+			}
         }
 
         return Status::OK();
     }
 
-    virtual Status perform_censor(vector<T>& values) {
+    virtual Status perform_censor(vector<T>& values, int& n_missing) {
         Status s;
         if (!censored_samples.empty()) {
             T missing_value;
             S(get_missing_value(missing_value));
             for (auto& cs : censored_samples) {
                 for (int j = 0; j < count; j++) {
-                    values[cs.first*count+j] = missing_value;
+                	//check if value is already missing
+                	if (values[cs.first*count+j] != missing_value)
+                	{
+	                    values[cs.first*count+j] = missing_value;
+	                   	n_missing++;
+	                }
                 }
             }
         }
@@ -369,9 +379,15 @@ public:
     Status update_record_format(const bcf_hdr_t* hdr, bcf1_t* record) override {
         Status s;
         vector<T> ans;
-        S(combine_format_data(ans));
+        int n_missing = 0;
+        S(combine_format_data(ans, n_missing));
         assert(ans.size() == n_samples*count);
-        S(perform_censor(ans));
+        S(perform_censor(ans, n_missing));
+
+        if(ans.size() == n_missing) {
+			// If all values are missing, don't update the record
+			return Status::OK();
+		}
 
         int retval  = 0;
         switch (field_info.type) {
@@ -452,7 +468,7 @@ public:
 protected:
     const string& ref_dp_format_;
 
-    Status perform_censor(vector<int32_t>& values) override {
+    Status perform_censor(vector<int32_t>& values, int& n_missing) override {
         Status s;
         if (!censored_samples.empty()) {
             int32_t missing_value;
@@ -489,7 +505,7 @@ public:
     }
 
 protected:
-    Status combine_format_data(vector<int32_t>& ans) override {
+    Status combine_format_data(vector<int32_t>& ans, int& n_missing) override {
         Status s;
         ans.clear();
 
@@ -690,7 +706,7 @@ class StringFormatFieldHelper : public FormatFieldHelper {
 protected:
     vector<vector<string>> format_v;
 
-    Status combine_format_data(vector<string>& ans) {
+    Status combine_format_data(vector<string>& ans, int& n_missing) {
         Status s;
         ans.clear();
 
@@ -700,6 +716,7 @@ protected:
             set<string> uniq(format_one.begin(), format_one.end());
             if (uniq.empty()) {
                 ans.push_back(".");
+                n_missing++;
             } else if (uniq.size() == 1 || field_info.combi_method == FieldCombinationMethod::SEMICOLON) {
                 ostringstream oss;
                 bool first = true;
@@ -713,6 +730,7 @@ protected:
                 ans.push_back(oss.str());
             } else if (field_info.combi_method == FieldCombinationMethod::MISSING) {
                 ans.push_back(".");
+                n_missing++;
             } else {
                 return Status::Invalid("genotyper misconfiguration: unsupported combi_method for string format field.", field_info.name);
             }
@@ -721,12 +739,17 @@ protected:
         return Status::OK();
     }
 
-    virtual Status perform_censor(vector<string>& values) {
+    virtual Status perform_censor(vector<string>& values, int& n_missing) {
         Status s;
         if (!censored_samples.empty()) {
             for (auto& cs : censored_samples) {
                 for (int j = 0; j < count; j++) {
-                    values[cs.first*count+j] = ".";
+                	//check if value is already missing
+                	if (values[cs.first*count+j] != ".") 
+                	{
+	                    values[cs.first*count+j] = ".";
+	                    n_missing++;
+	                }
                 }
             }
         }
@@ -746,12 +769,14 @@ public:
                            bcf1_t* record, const map<int, int>& sample_mapping,
                            const vector<int>& allele_mapping, const int n_allele_out,
                            const vector<string>& field_names, int n_val_per_sample) override {
-        return Status::NotImplemented("genotyper StringFormatFieldHelper::add_record_data");
-        /*
         bool found = false;
         if (n_val_per_sample < 0) {
             n_val_per_sample = expected_n_val_per_sample(record);
         }
+
+		//config checked during construction of StringFormatFieldHelper
+		// bcf_get_format_string returns count of characters, does not support multiple values per sample
+		assert(n_val_per_sample == 1);
 
         const vector<string> * names_to_search = &field_names;
         if (names_to_search->empty()) {
@@ -780,12 +805,6 @@ public:
 
             if (rv >= 0) {
                 found = true;
-                if (rv != record->n_sample * n_val_per_sample) {
-                // For this field, we expect n_val_per_sample values per sample
-                    ostringstream errmsg;
-                    errmsg << dataset << " " << range(record).str() << "(" << field_name << ")";
-                    return Status::Invalid("genotyper: unexpected result when fetching record FORMAT field", errmsg.str());
-                }
 
                 for (int i=0; i<record->n_sample; i++) {
                     for (int j=0; j<n_val_per_sample; j++) {
@@ -804,15 +823,21 @@ public:
             }
         }
 
-        return found ? Status::OK() : Status::NotFound();*/
+        return found ? Status::OK() : Status::NotFound();
     }
 
     Status update_record_format(const bcf_hdr_t* hdr, bcf1_t* record) override {
         Status s;
         vector<string> ans;
-        S(combine_format_data(ans));
+        int n_missing = 0;
+        S(combine_format_data(ans, n_missing));
+
         assert(ans.size() == n_samples*count);
-        S(perform_censor(ans));
+        S(perform_censor(ans, n_missing));
+
+        if (n_missing == ans.size()) {
+			return Status::OK();
+		}
 
         vector<const char*> cstrs;
         for (auto& s : ans) {
@@ -933,6 +958,9 @@ Status setup_format_helpers(vector<unique_ptr<FormatFieldHelper>>& format_helper
             }
             case RetainedFieldType::STRING:
             {
+            	if (format_field_info.number != RetainedFieldNumber::BASIC || format_field_info.count != 1) {
+            		return Status::Invalid("genotyper misconfiguration: string format fields only support count: 1 and number: basic", format_field_info.name);
+            	}
                 format_helpers.push_back(unique_ptr<FormatFieldHelper>(new StringFormatFieldHelper(format_field_info, samples.size(), count)));
                 break;
             }
